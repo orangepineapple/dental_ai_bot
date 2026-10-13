@@ -9,6 +9,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Runs *.sql files in name order, only when the data volume is empty.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
 
 volumes:
   pgdata:

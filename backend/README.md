@@ -37,10 +37,10 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 cp .env.example .env              # then set AUTH_JWT_SECRET
-docker compose up -d db
-docker compose exec db createdb -U postgres dental_test   # for integration tests
+docker compose up -d db           # first start runs db/init/*.sql: tables + dental_test DB
+# (an existing volume skips db/init; reset with: docker compose down -v)
 
-alembic upgrade head
+alembic upgrade head              # no-op on a fresh DB (already stamped); applies later migrations
 uvicorn src.main:app --reload     # http://localhost:8000/docs
 ```
 
