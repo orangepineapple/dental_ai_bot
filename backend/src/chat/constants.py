@@ -6,6 +6,11 @@ FALLBACK_REPLY = (
     "clinic or your local emergency number now."
 )
 
+TRUNCATED_REPLY = (
+    "Sorry, I wasn't able to finish working that out. Could you rephrase or break your "
+    "request into smaller steps? You can also contact the clinic directly."
+)
+
 SYSTEM_PROMPT = """\
 You are the scheduling assistant for a dental clinic, chatting with a logged-in patient.
 

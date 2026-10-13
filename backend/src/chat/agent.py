@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.chat.config import ChatConfig
-from src.chat.constants import FALLBACK_REPLY, SYSTEM_PROMPT
+from src.chat.constants import FALLBACK_REPLY, SYSTEM_PROMPT, TRUNCATED_REPLY
 from src.chat.exceptions import LLMUnavailable
 from src.chat.llm import LLMClient
 from src.tools.base import ToolContext
@@ -53,27 +53,31 @@ async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: lis
     new_messages: list[Message] = []
     tools = registry.openai_tools()
 
-    def fallback() -> AgentResult:
-        msg = {"role": "assistant", "content": FALLBACK_REPLY}
+    def fallback(reason: str, text: str = FALLBACK_REPLY) -> AgentResult:
+        if config.DEBUG_PRINT:
+            print(f"[AGENT DEBUG] returning FALLBACK_REPLY because: {reason}")
+        msg ={"role": "assistant", "content": FALLBACK_REPLY}
         return AgentResult(FALLBACK_REPLY, [*new_messages, msg], degraded=True)
 
     for round_index in range(config.MAX_TOOL_ROUNDS + 1):
         offer_tools = round_index < config.MAX_TOOL_ROUNDS
         try:
             response = await llm.complete(messages, tools if offer_tools else [])
-        except LLMUnavailable:
-            return fallback()
+        except LLMUnavailable as exc:
+            return fallback(f"LLMUnavailable on round {round_index}: {exc}")
 
         if not response.tool_calls:
             reply = (response.content or "").strip()
+            if not reply and response.finish_reason == "length":
+                return fallback("output hit MAX_OUTPUT_TOKENS before any answer (thinking too long)", TRUNCATED_REPLY)
             if not reply:
-                return fallback()
+                return fallback(f"model returned empty content and no tool calls on round {round_index}")
             new_messages.append({"role": "assistant", "content": reply})
             return AgentResult(reply, new_messages)
 
         if not offer_tools:
             # Model asked for tools although none were offered.
-            return fallback()
+            return fallback(f"model requested tools after the {config.MAX_TOOL_ROUNDS}-round limit")
 
         assistant_msg: Message = {
             "role": "assistant",
@@ -102,8 +106,10 @@ async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: lis
                     timeout_seconds=config.TOOL_TIMEOUT_SECONDS,
                     max_output_chars=config.MAX_TOOL_OUTPUT_CHARS,
                 )
+            if config.DEBUG_PRINT:
+                print(f"[AGENT DEBUG] tool {call.name} args={call.arguments} -> {output}")
             tool_msg: Message = {"role": "tool", "tool_call_id": call.id, "content": output}
             messages.append(tool_msg)
             new_messages.append(tool_msg)
 
-    return fallback()  # pragma: no cover - loop always returns above
+    return fallback("loop ended without a reply")  # pragma: no cover - loop always returns above

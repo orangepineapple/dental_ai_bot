@@ -9,13 +9,12 @@ from src.chat.agent import AgentResult, Message, run_agent_loop
 from src.chat.config import ChatConfig
 from src.chat.llm import LLMClient
 from src.chat.models import ChatConversation, ChatMessage
+from src.chat.schemas import ConversationSummary
 from src.tools.base import ToolContext
 from src.tools.registry import ToolRegistry
 
 
-async def get_or_create_conversation(
-    session: AsyncSession, user: AuthUser, conversation_id: uuid.UUID | None
-) -> ChatConversation | None:
+async def get_or_create_conversation(session: AsyncSession, user: AuthUser, conversation_id: uuid.UUID | None) -> ChatConversation | None:
     """Return the user's conversation, a new one, or None if the id is not theirs."""
     if conversation_id is None:
         conversation = ChatConversation(user_id=user.id)
@@ -71,6 +70,62 @@ async def list_visible_messages(
         .order_by(ChatMessage.id)
     )
     return list(result.scalars().all())
+
+
+_VISIBLE = (ChatMessage.role.in_(("user", "assistant")), ChatMessage.content.is_not(None))
+_TITLE_CHARS = 60
+
+
+async def count_visible_messages(session: AsyncSession, conversation_id: uuid.UUID) -> int:
+    result = await session.execute(
+        select(func.count())
+        .select_from(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation_id, *_VISIBLE)
+    )
+    return result.scalar_one()
+
+
+async def list_conversations(
+    session: AsyncSession, user: AuthUser, limit: int = 50) -> list[ConversationSummary]:
+    """The user's conversations, most recently active first. Empty ones are skipped."""
+    first_user_message = (
+        select(ChatMessage.content)
+        .where(
+            ChatMessage.conversation_id == ChatConversation.id,
+            ChatMessage.role == "user",
+        )
+        .order_by(ChatMessage.id)
+        .limit(1)
+        .correlate(ChatConversation)
+        .scalar_subquery()
+    )
+    result = await session.execute(
+        select(
+            ChatConversation.id,
+            ChatConversation.updated_at,
+            first_user_message.label("title"),
+            func.count(ChatMessage.id).label("message_count"),
+        )
+        .join(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .where(ChatConversation.user_id == user.id, *_VISIBLE)
+        .group_by(ChatConversation.id)
+        .order_by(ChatConversation.updated_at.desc())
+        .limit(limit)
+    )
+    summaries = []
+    for row in result.all():
+        title = (row.title or "").strip()
+        if len(title) > _TITLE_CHARS:
+            title = title[: _TITLE_CHARS - 1].rstrip() + "…"
+        summaries.append(
+            ConversationSummary(
+                id=row.id,
+                title=title or "New conversation",
+                message_count=row.message_count,
+                updated_at=row.updated_at,
+            )
+        )
+    return summaries
 
 
 def _persist(

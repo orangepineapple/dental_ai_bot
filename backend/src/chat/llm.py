@@ -24,6 +24,7 @@ class LLMToolCall:
 class LLMResponse:
     content: str | None
     tool_calls: list[LLMToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
 
 
 class LLMClient(Protocol):
@@ -51,7 +52,10 @@ class OpenAICompatibleClient:
         )
 
     async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> LLMResponse:
+        debug = self._config.DEBUG_PRINT
         if self._client is None:
+            if debug:
+                print("[LLM DEBUG] client not created: LLM_API_KEY is not set (even Ollama needs a dummy value)")
             raise LLMUnavailable("LLM_API_KEY is not configured")
 
         kwargs: dict[str, Any] = {
@@ -62,20 +66,38 @@ class OpenAICompatibleClient:
         }
         if tools:
             kwargs["tools"] = tools
+        if self._config.REASONING_EFFORT:
+            kwargs["reasoning_effort"] = self._config.REASONING_EFFORT
 
         try:
             completion = await self._client.chat.completions.create(**kwargs)
         except openai.OpenAIError as exc:
             # Log the class only; request/response bodies may contain patient text.
             logger.warning("LLM request failed: %s", type(exc).__name__)
+            if debug:
+                print(f"[LLM DEBUG] provider call failed: {type(exc).__name__}: {exc} (base_url={self._config.BASE_URL}, model={self._config.MODEL})")
             raise LLMUnavailable(type(exc).__name__) from exc
 
         if not completion.choices:
+            if debug:
+                print(f"[LLM DEBUG] provider returned no choices: {completion!r}")
             raise LLMUnavailable("empty response")
         message = completion.choices[0].message
+        if debug:
+            # Ollama/Qwen expose thinking as `reasoning` (or `reasoning_content`); some
+            # builds leave <think>...</think> inline in content instead.
+            reasoning = getattr(message, "reasoning", None) or getattr(message, "reasoning_content", None)
+            print(
+                "[LLM DEBUG] ---- model response ----\n"
+                f"finish_reason: {completion.choices[0].finish_reason}\n"
+                f"reasoning: {reasoning!r}\n"
+                f"content: {message.content!r}\n"
+                f"tool_calls: {message.tool_calls!r}\n"
+                "[LLM DEBUG] ---- end ----"
+            )
         tool_calls = [
             LLMToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
             for tc in (message.tool_calls or [])
             if getattr(tc, "function", None) is not None
         ]
-        return LLMResponse(content=message.content, tool_calls=tool_calls)
+        return LLMResponse(content=message.content, tool_calls=tool_calls, finish_reason=completion.choices[0].finish_reason)

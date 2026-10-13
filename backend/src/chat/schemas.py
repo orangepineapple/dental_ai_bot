@@ -27,3 +27,11 @@ class ChatMessageResponse(CustomModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+
+
+class ConversationSummary(CustomModel):
+    id: uuid.UUID
+    # First user message, truncated.
+    title: str
+    message_count: int
+    updated_at: datetime
