@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic[email]>=2.7
+pydantic-settings>=2.4
+sqlalchemy[asyncio]>=2.0.30
+asyncpg>=0.29
+alembic>=1.13
+pyjwt>=2.9
+argon2-cffi>=23.1
+openai>=1.40
