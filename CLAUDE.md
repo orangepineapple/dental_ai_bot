@@ -1,19 +1,30 @@
-
-
 ## Tech stack
-Databse is Postgres
+Database is Postgres
 Server is FastAPI
 Frontend is NextJs
 Model uses OpenAI's API, I'm thinking of just using Deepseek with a free API key for testing
 
-## Required domain services and tool capabilities
-Implement these as backend services first. Expose a capability as an LLM tool only when the model needs to invoke it.
-Registration and identity
+## Folder Structure
+backend - main folder holding the FastAPI project
+frontend - main folder holding the NextJs project, currently just the boilerplate npx create
+
+backend/src - holds all the project files
+backend/src/auth - holds all auth related endpoints, models, ect use this as the refence file folder structure per module
+backend/src/chat - module relating to the chat endpoints. Users send messaged in the frontend, they are processed here in the agentic loop
+backend/src/tools - holds all the tools with no public facing endpoints, internal tools used only by the model
+backend/src/appointments - holds all the tool related to booking appointments, getting available appointments and scheduling
+backend/src/emergency - holds all the tooling related to if a patient reports an emergency. Notifies staff
+backend/src/registration - holds all the tooling allowing patients to register through the chat interface
+backend/src/family - holds all the tooling related to checking which patients are a family
+
+## Required domain services and tool capabilities located in src/tools
+Implement these as backend services first. Then add it to the models tool registry. The agentic loop should already be created, and located in src/chat. If it does not exist return to the user for further instruction.
+### Registration and identity
 A note, patients create their account and login through the Nextjs frontend. So if a chat is coming through, then the patient has a registered account
 - get_patient_appointments: only for the authenticated and authorized patient.
 - get_appointment_details: authorized access only.
 Scheduling
-- get_appointment_types: return supported types, configured durations, eligibility, and escalation rules.
+- get_appointment_types: return supported types, configured durations, eligibility, and escalation rules. Used as a reference to the different type of services the clinic offers
 - get_available_slots: query actual availability using appointment type, date range, duration, provider constraints, and clinic hours.
 - book_appointment: require server-side patient authorization and explicit confirmation; recheck availability inside a transaction; make retries idempotent.
 - reschedule_appointment: authorize, check policy, confirm new slot, and update atomically.
