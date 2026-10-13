@@ -21,7 +21,8 @@ src/
 ├── family/          # Family members, consecutive slots, group booking     [planned]
 ├── emergency/       # Clinic-approved emergency guidance, staff handoff    [planned]
 ├── clinic/          # Clinic info and approved knowledge                   [planned]
-└── chat/            # LLM adapter, tool dispatcher, conversation storage   [planned]
+├── chat/            # /chat endpoints, agentic loop, LLM adapter, storage  [implemented]
+└── tools/           # Model-facing tool registry + tool handlers           [appointment tools stubbed]
 migrations/          # Alembic (async)
 tests/unit/          # No database needed
 tests/integration/   # Needs a disposable Postgres (TEST_DATABASE_URL)
@@ -43,6 +44,22 @@ docker compose up -d db           # first start runs db/init/*.sql: tables + den
 alembic upgrade head              # no-op on a fresh DB (already stamped); applies later migrations
 uvicorn src.main:app --reload     # http://localhost:8000/docs
 ```
+
+## Chat API
+
+Set `LLM_API_KEY` in `.env` (a DeepSeek key works; `LLM_BASE_URL`/`LLM_MODEL` default to
+DeepSeek). Run `alembic upgrade head` to create the chat tables. Do not use real patient
+data with a third-party provider during development.
+
+| Method | Path                                        | Notes |
+|--------|---------------------------------------------|-------|
+| POST   | `/chat/messages`                            | `{message, conversation_id?}` -> `{conversation_id, reply, degraded}`. Bearer token required. |
+| GET    | `/chat/conversations/{id}/messages`         | User/assistant transcript for the owner only. |
+
+Tools are registered in `src/tools/registry.py`. The appointment tools
+(`get_available_slots`, `book_appointment`, `reschedule_appointment`, `cancel_appointment`)
+are placeholders in `src/tools/appointments/tools.py` that return `not_implemented`; each
+handler's docstring specifies the tables and behavior to implement.
 
 ## Auth API (for the Next.js frontend)
 

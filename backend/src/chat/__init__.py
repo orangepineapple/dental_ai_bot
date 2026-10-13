@@ -1,6 +1,5 @@
-"""Chat orchestration (not yet implemented).
+"""Chat: HTTP router, agentic loop (agent.py), provider adapter (llm.py), persistence.
 
-Planned: provider adapter for the OpenAI-compatible SDK, strict tool schemas,
-allowlisted tool dispatcher, round/time/length limits, server-side conversation
-persistence with a retention policy, and a safe fallback when the provider is down.
+The tools the model can call live in `src/tools` and are reached only through the
+allowlisted `ToolRegistry`.
 """

@@ -4,5 +4,5 @@ search_clinic_knowledge over approved documents only.
 
 Insurance answers must not guarantee coverage.
 Quotes based on what is input into the clinic information DB
-Gets the types of appointments offered by the clinic
+Gets the types of appointments offered by the clinic get_appointment_types
 """

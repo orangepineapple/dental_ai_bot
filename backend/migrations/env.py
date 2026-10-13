@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.auth import models as auth_models  # noqa: F401  (registers tables)
+from src.chat import models as chat_models  # noqa: F401  (registers tables)
 from src.config import settings
 from src.models import Base
 from src.patients import models as patients_models  # noqa: F401  (registers tables)
