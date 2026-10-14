@@ -1,6 +1,7 @@
 """Provider adapter. The rest of the app depends only on `LLMClient`."""
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -11,6 +12,9 @@ from src.chat.config import ChatConfig
 from src.chat.exceptions import LLMUnavailable
 
 logger = logging.getLogger(__name__)
+
+# Some Qwen/Ollama builds leave reasoning inline in content as <think>...</think>.
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +73,15 @@ class OpenAICompatibleClient:
         if self._config.REASONING_EFFORT:
             kwargs["reasoning_effort"] = self._config.REASONING_EFFORT
 
+        # Turn of think because the model is thinking to long
+        kwargs["extra_body"] = {"think": False}
+
+        if debug:
+            sent_chars = sum(len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or "")) for m in messages)
+            print(f"[LLM DEBUG] ---- request: {len(messages)} messages, ~{sent_chars} chars, {len(tools)} tools ----")
+            for m in messages[1:]:
+                print(f"[LLM DEBUG]   {m['role']}: {str(m.get('content') or m.get('tool_calls'))[:80]!r}")
+
         try:
             completion = await self._client.chat.completions.create(**kwargs)
         except openai.OpenAIError as exc:
@@ -100,4 +113,5 @@ class OpenAICompatibleClient:
             for tc in (message.tool_calls or [])
             if getattr(tc, "function", None) is not None
         ]
-        return LLMResponse(content=message.content, tool_calls=tool_calls, finish_reason=completion.choices[0].finish_reason)
+        content = _THINK_BLOCK.sub("", message.content).strip() if message.content else message.content
+        return LLMResponse(content=content, tool_calls=tool_calls, finish_reason=completion.choices[0].finish_reason)

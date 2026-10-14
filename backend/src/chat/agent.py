@@ -28,15 +28,16 @@ class AgentResult:
     degraded: bool = False
 
 
-def build_system_prompt(timezone_name: str) -> str:
+def build_system_prompt(timezone_name: str, patient_context: str = "") -> str:
     try:
         now = datetime.now(ZoneInfo(timezone_name))
     except ZoneInfoNotFoundError:
         now = datetime.now(ZoneInfo("UTC"))
-    return f"{SYSTEM_PROMPT}\nToday is {now:%A %Y-%m-%d} ({now.tzinfo})."
+    prompt = f"{SYSTEM_PROMPT}\nToday is {now:%A %Y-%m-%d} ({now.tzinfo})."
+    return f"{prompt}\n\n{patient_context}" if patient_context else prompt
 
 
-async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: list[Message], ctx_factory: Callable[[str], ToolContext], config: ChatConfig,) -> AgentResult:
+async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: list[Message], ctx_factory: Callable[[str], ToolContext], config: ChatConfig, patient_context: str = "") -> AgentResult:
     """Call the model, execute requested tools, repeat until it answers.
 
     `history` already ends with the new user message. `ctx_factory(tool_call_id)`
@@ -47,7 +48,7 @@ async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: lis
     the canned fallback rather than raising.
     """
     messages: list[Message] = [
-        {"role": "system", "content": build_system_prompt(config.CLINIC_TIMEZONE)},
+        {"role": "system", "content": build_system_prompt(config.CLINIC_TIMEZONE, patient_context)},
         *history,
     ]
     new_messages: list[Message] = []
@@ -57,7 +58,7 @@ async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: lis
         if config.DEBUG_PRINT:
             print(f"[AGENT DEBUG] returning FALLBACK_REPLY because: {reason}")
         msg ={"role": "assistant", "content": FALLBACK_REPLY}
-        return AgentResult(FALLBACK_REPLY, [*new_messages, msg], degraded=True)
+        return AgentResult(text, [*new_messages, msg], degraded=True)
 
     for round_index in range(config.MAX_TOOL_ROUNDS + 1):
         offer_tools = round_index < config.MAX_TOOL_ROUNDS
@@ -67,9 +68,11 @@ async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: lis
             return fallback(f"LLMUnavailable on round {round_index}: {exc}")
 
         if not response.tool_calls:
+            if response.finish_reason == "length":
+                # Cut off mid-output: with small reasoning models this is leaked chain of
+                # thought, never a finished answer, so it must not reach the patient.
+                return fallback("output hit MAX_OUTPUT_TOKENS (thinking too long)", TRUNCATED_REPLY)
             reply = (response.content or "").strip()
-            if not reply and response.finish_reason == "length":
-                return fallback("output hit MAX_OUTPUT_TOKENS before any answer (thinking too long)", TRUNCATED_REPLY)
             if not reply:
                 return fallback(f"model returned empty content and no tool calls on round {round_index}")
             new_messages.append({"role": "assistant", "content": reply})

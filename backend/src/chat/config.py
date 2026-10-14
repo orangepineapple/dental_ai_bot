@@ -9,15 +9,15 @@ class ChatConfig(BaseSettings):
     # Unset key => the provider is treated as unavailable and the safe fallback is used.
     API_KEY: SecretStr | None = None
     BASE_URL: str = "http://localhost:11434/v1"
-    # deepseek-chat supports tool calling; deepseek-reasoner does not.
-    MODEL: str = "qwen3:4b"
+    # qwen model used in testing with a enlarged context window
+    MODEL: str = "qwen3-32k"
 
     TEMPERATURE: float = Field(default=0.7, ge=0, le=2)
     # Reasoning models spend this budget on thinking before answering; too low => empty replies.
     MAX_OUTPUT_TOKENS: int = Field(default=2048, ge=64, le=8192)
     # Passed as reasoning_effort (Ollama: none/low/medium/high). None = provider default.
-    REASONING_EFFORT: str | None = None
-    REQUEST_TIMEOUT_SECONDS: float = Field(default=30, gt=0)
+    REASONING_EFFORT: str | None = "none"
+    REQUEST_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
 
     # Agentic loop limits.
     MAX_TOOL_ROUNDS: int = Field(default=5, ge=0, le=10)
@@ -36,7 +36,7 @@ class ChatConfig(BaseSettings):
     DEBUG_PRINT: bool = False
 
     # Used only to tell the model what "today" is.
-    CLINIC_TIMEZONE: str = "ET"
+    CLINIC_TIMEZONE: str = "America/New_York"
 
 
 chat_settings = ChatConfig()

@@ -7,7 +7,15 @@ from src.chat import service
 from src.chat.constants import CHAT_ROUTE_PREFIX
 from src.chat.dependencies import LLM, Config, Registry
 from src.chat.exceptions import ConversationFull
-from src.chat.schemas import ChatMessageResponse, ChatRequest, ChatResponse, ConversationSummary
+from src.appointments.exceptions import NotFound as ProposalNotFound
+from src.chat.schemas import (
+    ChatMessageResponse,
+    ChatRequest,
+    ChatResponse,
+    ConversationSummary,
+    ProposalResolution,
+    ProposalResponse,
+)
 from src.database import DbSession
 from src.exceptions import ErrorResponse, NotFound
 
@@ -34,6 +42,7 @@ async def send_message( data: ChatRequest, user: CurrentUser, session: DbSession
     if conversation is None:
         raise NotFound()
     conversation_id = conversation.id  # read before the service expires the instance
+    user_id = user.id
     # A turn adds a user message and a reply, so refuse if it could pass the cap.
     count = await service.count_visible_messages(session, conversation_id)
     if count + 2 > config.MAX_CONVERSATION_MESSAGES:
@@ -47,8 +56,12 @@ async def send_message( data: ChatRequest, user: CurrentUser, session: DbSession
         conversation=conversation,
         text=data.message,
     )
+    proposal = await service.get_pending_proposal(session, user_id, conversation_id)
     return ChatResponse(
-        conversation_id=conversation_id, reply=result.reply, degraded=result.degraded
+        conversation_id=conversation_id,
+        reply=result.reply,
+        degraded=result.degraded,
+        proposal=proposal,
     )
 
 
@@ -72,3 +85,41 @@ async def get_messages(conversation_id: uuid.UUID, user: CurrentUser, session: D
 )
 async def list_conversations(user: CurrentUser, session: DbSession) -> list[ConversationSummary]:
     return await service.list_conversations(session, user)
+
+
+@router.get("/conversations/{conversation_id}/proposal",
+    summary="Pending booking confirmation",
+    description="The booking card still waiting for the patient, or null.",
+    responses=_ERRORS,
+)
+async def get_pending_proposal(conversation_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResponse | None:
+    conversation = await service.get_or_create_conversation(session, user, conversation_id)
+    if conversation is None:
+        raise NotFound()
+    return await service.get_pending_proposal(session, user.id, conversation.id)
+
+
+@router.post("/proposals/{proposal_id}/confirm",
+    summary="Confirm a proposed booking",
+    description=(
+        "The patient's explicit approval. This is the only way a chat booking is created; "
+        "it is idempotent, so a repeated click returns the first result."
+    ),
+    responses=_ERRORS,
+)
+async def confirm_proposal(proposal_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResolution:
+    try:
+        return await service.resolve_proposal(session, user, proposal_id, "confirm")
+    except ProposalNotFound:
+        raise NotFound() from None
+
+
+@router.post("/proposals/{proposal_id}/decline",
+    summary="Decline a proposed booking",
+    responses=_ERRORS,
+)
+async def decline_proposal(proposal_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResolution:
+    try:
+        return await service.resolve_proposal(session, user, proposal_id, "decline")
+    except ProposalNotFound:
+        raise NotFound() from None

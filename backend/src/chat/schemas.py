@@ -16,11 +16,36 @@ class ChatRequest(CustomModel):
     conversation_id: uuid.UUID | None = None
 
 
+class ProposalResponse(CustomModel):
+    """A booking awaiting the patient's Confirm / Decline click (rendered as a card)."""
+
+    id: uuid.UUID
+    kind: Literal["booking"] = "booking"
+    appointment_type: str
+    patient_first_name: str
+    provider_name: str
+    # ISO 8601 with the clinic's UTC offset, plus a ready-to-display version of it.
+    starts_at: str
+    display_time: str
+    duration_minutes: int
+    expires_at: datetime
+    reason: str | None = None
+
+
+class ProposalResolution(CustomModel):
+    status: Literal["confirmed", "declined", "failed", "expired", "superseded"]
+    # Server-written text. This is also stored in the conversation as the assistant's reply.
+    message: str
+    proposal: ProposalResponse
+
+
 class ChatResponse(CustomModel):
     conversation_id: uuid.UUID
     reply: str
     # True when the model provider failed and the canned fallback was returned.
     degraded: bool = False
+    # Present while a booking confirmation card is waiting for the patient.
+    proposal: ProposalResponse | None = None
 
 
 class ChatMessageResponse(CustomModel):
