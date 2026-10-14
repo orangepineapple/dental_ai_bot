@@ -9,20 +9,64 @@ Rules that apply to every tool in this file (from CLAUDE.md):
 - Never claim success unless the DB transaction committed (the service guarantees it).
 """
 
+import secrets
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
+from sqlalchemy import select
 
 from src.appointments import cancel_proposals, proposals, service
 from src.appointments.config import appointment_settings
-from src.appointments.exceptions import AppointmentError
+from src.appointments.exceptions import AppointmentError, SlotUnavailable
+from src.appointments.models import SlotOffer
 from src.tools.base import ToolArgs, ToolContext, ToolDefinition
 
 MAX_SLOT_SEARCH_DAYS = 31
 MAX_LISTED_APPOINTMENTS = 20
+# Unambiguous characters only (no 0/o, 1/l/i): easy for a model to copy exactly.
+SLOT_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+SLOT_CODE_LENGTH = 5
+
+
+async def _store_slot_offers(ctx: ToolContext, tokens: list[str]) -> list[str]:
+    """Give each signed slot token a short per-conversation code the model can copy safely."""
+    taken = set(
+        (await ctx.session.execute(select(SlotOffer.code).where(SlotOffer.conversation_id == ctx.conversation_id)))
+        .scalars()
+        .all()
+    )
+    expires_at = datetime.now(UTC) + timedelta(minutes=appointment_settings.SLOT_TOKEN_TTL_MINUTES)
+    codes: list[str] = []
+    for token in tokens:
+        code = "".join(secrets.choice(SLOT_CODE_ALPHABET) for _ in range(SLOT_CODE_LENGTH))
+        while code in taken:
+            code = "".join(secrets.choice(SLOT_CODE_ALPHABET) for _ in range(SLOT_CODE_LENGTH))
+        taken.add(code)
+        codes.append(code)
+        ctx.session.add(
+            SlotOffer(conversation_id=ctx.conversation_id, code=code, slot_token=token, expires_at=expires_at)
+        )
+    await ctx.session.commit()
+    return codes
+
+
+async def _resolve_slot_token(ctx: ToolContext, slot_id: str) -> str:
+    """Map a short slot_id to its signed token. The signed token is still verified downstream."""
+    value = slot_id.strip()
+    if "." in value:  # a full signed token (internal callers / older conversations)
+        return value
+    token = await ctx.session.scalar(
+        select(SlotOffer.slot_token).where(
+            SlotOffer.conversation_id == ctx.conversation_id, SlotOffer.code == value.lower()
+        )
+    )
+    if token is None:
+        raise SlotUnavailable("That time slot is not valid. Search for available times again.")
+    return token
+
 
 def _local_iso(value: datetime) -> str:
     return value.astimezone(ZoneInfo(appointment_settings.CLINIC_TIMEZONE)).isoformat()
@@ -94,17 +138,18 @@ async def get_available_slots(args: GetAvailableSlotsArgs, ctx: ToolContext) -> 
             end_date=args.end_date,
             provider_id=args.provider_id,
         )
+        codes = await _store_slot_offers(ctx, [slot.token for slot in result.slots])
         return {
             "status": "ok",
             "appointment_type": result.appointment_type.code,
             "duration_minutes": result.appointment_type.duration_minutes,
             "slots": [
                 {
-                    "slot_id": slot.token,
+                    "slot_id": code,
                     "starts_at": _local_iso(slot.starts_at),
                     "provider_name": slot.provider_name,
                 }
-                for slot in result.slots
+                for code, slot in zip(codes, result.slots, strict=True)
             ],
         }
 
@@ -116,7 +161,7 @@ async def get_available_slots(args: GetAvailableSlotsArgs, ctx: ToolContext) -> 
 # --------------------------------------------------------------------------- #
 class ProposeBookingArgs(ToolArgs):
     slot_id: str = Field(
-        min_length=1, max_length=512, description="slot_id returned by get_available_slots."
+        min_length=1, max_length=512, description="slot_id returned by get_available_slots, copied exactly."
     )
     patient_id: uuid.UUID | None = Field(
         default=None,
@@ -142,7 +187,7 @@ async def propose_booking(args: ProposeBookingArgs, ctx: ToolContext) -> dict[st
             actor_patient_id=ctx.patient_id,
             target_patient_id=args.patient_id or ctx.patient_id,
             conversation_id=ctx.conversation_id,
-            slot_token=args.slot_id,
+            slot_token=await _resolve_slot_token(ctx, args.slot_id),
             reason=args.reason,
         )
         return {
@@ -167,7 +212,7 @@ async def propose_booking(args: ProposeBookingArgs, ctx: ToolContext) -> dict[st
 class RescheduleAppointmentArgs(ToolArgs):
     appointment_id: uuid.UUID = Field(description="Existing appointment to move.")
     new_slot_id: str = Field(
-        min_length=1, max_length=512, description="slot_id returned by get_available_slots."
+        min_length=1, max_length=512, description="slot_id returned by get_available_slots, copied exactly."
     )
     confirmed: bool = Field(
         description=(
@@ -186,7 +231,7 @@ async def reschedule_appointment(args: RescheduleAppointmentArgs, ctx: ToolConte
             actor_user_id=ctx.user_id,
             actor_patient_id=ctx.patient_id,
             appointment_id=args.appointment_id,
-            new_slot_token=args.new_slot_id,
+            new_slot_token=await _resolve_slot_token(ctx, args.new_slot_id),
             confirmed=args.confirmed,
         )
         return {
@@ -340,7 +385,7 @@ async def get_booking_status(args: GetBookingStatusArgs, ctx: ToolContext) -> di
             actor_patient_id=ctx.patient_id,
             target_patient_id=args.patient_id or ctx.patient_id,
             conversation_id=ctx.conversation_id,
-            slot_token=args.slot_id,
+            slot_token=await _resolve_slot_token(ctx, args.slot_id),
         )
         if view is None:
             return {"status": "not_booked", "message": "No booking exists for that slot."}

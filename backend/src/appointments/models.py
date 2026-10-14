@@ -253,3 +253,23 @@ class CancellationProposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SlotOffer(Base):
+    """Short code -> signed slot token, per conversation.
+
+    The model only ever sees the short code, so it never has to copy a long token.
+    The signed token is still what is verified when proposing or booking.
+    """
+
+    __tablename__ = "slot_offer"
+    __table_args__ = (Index("slot_offer_conversation_code_key", "conversation_id", "code", unique=True),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_conversation.id", ondelete="CASCADE")
+    )
+    code: Mapped[str] = mapped_column(String(8))
+    slot_token: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

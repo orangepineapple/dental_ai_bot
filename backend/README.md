@@ -52,6 +52,10 @@ Set `LLM_API_KEY` in `.env` (a DeepSeek key works; `LLM_BASE_URL`/`LLM_MODEL` de
 DeepSeek). Run `alembic upgrade head` to create the chat tables. Do not use real patient
 data with a third-party provider during development.
 
+To use Claude instead, `pip install anthropic` and set `LLM_PROVIDER=anthropic`,
+`LLM_ANTHROPIC_API_KEY` and (optionally) `LLM_ANTHROPIC_MODEL` (default `claude-sonnet-5-5`).
+The default provider remains the OpenAI-compatible one.
+
 | Method | Path                                        | Notes |
 |--------|---------------------------------------------|-------|
 | POST   | `/chat/messages`                            | `{message, conversation_id?}` -> `{conversation_id, reply, degraded}`. Bearer token required. |

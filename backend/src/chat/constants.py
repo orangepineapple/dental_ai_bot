@@ -11,6 +11,7 @@ TRUNCATED_REPLY = (
     "request into smaller steps? You can also contact the clinic directly."
 )
 
+#TODO Make more proactive
 SYSTEM_PROMPT = """\
 You are the scheduling assistant for a dental clinic, chatting with a logged-in patient.
 

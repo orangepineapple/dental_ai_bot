@@ -570,3 +570,24 @@ async def test_tool_hides_other_patients_appointments(session: AsyncSession, jan
 
     out = await _call(session, bob, "get_patient_appointments", {"patient_id": str(jane.patient_id)})
     assert out["status"] == "not_authorized"
+
+
+async def test_slot_ids_are_short_codes_and_unknown_codes_are_rejected(session: AsyncSession, jane: Person) -> None:
+    session.add(ChatConversation(id=jane.conversation_id, user_id=jane.user_id))
+    await session.commit()
+    day = next_monday().isoformat()
+
+    found = await _call(
+        session, jane, "get_available_slots",
+        {"appointment_type": "cleaning", "start_date": day, "end_date": day},
+    )
+    slot_ids = [slot["slot_id"] for slot in found["slots"]]
+    assert slot_ids and all(len(slot_id) <= 8 and "." not in slot_id for slot_id in slot_ids)
+    assert len(set(slot_ids)) == len(slot_ids)
+
+    unknown = await _call(session, jane, "propose_booking", {"slot_id": "zzzzz"})
+    assert unknown["status"] == "slot_unavailable"
+
+    # Codes are matched case-insensitively so a model that upper-cases one still works.
+    proposed = await _call(session, jane, "propose_booking", {"slot_id": slot_ids[0].upper()})
+    assert proposed["status"] == "awaiting_patient_confirmation"

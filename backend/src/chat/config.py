@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,10 +17,6 @@ class ChatConfig(BaseSettings):
     TEMPERATURE: float = Field(default=0.7, ge=0, le=2)
     # Reasoning models spend this budget on thinking before answering; too low => empty replies.
     MAX_OUTPUT_TOKENS: int = Field(default=6000, ge=64, le=8192)
-    # Passed as reasoning_effort (Ollama: none/low/medium/high). None = provider default.
-    REASONING_EFFORT: str | None = "none"
-    # Append Qwen3's "/no_think" to the system prompt. Turn off for non-Qwen models.
-    SOFT_NO_THINK: bool = True
     REQUEST_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
 
     # Agentic loop limits.
