@@ -9,7 +9,26 @@ from src.chat.constants import FALLBACK_REPLY
 from src.chat.exceptions import LLMUnavailable
 from src.chat.llm import LLMResponse, LLMToolCall
 from src.tools.base import ToolContext
-from src.tools.registry import tool_registry
+from src.tools.appointments.tools import GetAvailableSlotsArgs
+from src.tools.base import ToolDefinition
+from src.tools.registry import ToolRegistry
+
+
+async def _stub_slots(args: GetAvailableSlotsArgs, ctx: ToolContext) -> dict[str, Any]:
+    # The loop is tested in isolation from the DB-backed appointment service.
+    return {"status": "ok", "slots": []}
+
+
+tool_registry = ToolRegistry(
+    [
+        ToolDefinition(
+            name="get_available_slots",
+            description="stub",
+            args_model=GetAvailableSlotsArgs,
+            handler=_stub_slots,
+        )
+    ]
+)
 
 
 class FakeLLM:
@@ -68,7 +87,7 @@ async def test_tool_round_trip() -> None:
     roles = [m["role"] for m in result.new_messages]
     assert roles == ["assistant", "tool", "assistant"]
     assert result.new_messages[1]["tool_call_id"] == "c1"
-    assert json.loads(result.new_messages[1]["content"])["status"] == "not_implemented"
+    assert json.loads(result.new_messages[1]["content"])["status"] == "ok"
     # The tool result was fed back to the model on the second call.
     assert llm.calls[1]["messages"][-1]["role"] == "tool"
 

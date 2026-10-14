@@ -17,7 +17,7 @@ src/
 ├── exceptions.py    # Shared HTTP exceptions
 ├── auth/            # Registration, login, refresh, logout, current user   [implemented]
 ├── patients/        # Patient records (separate from login accounts)       [model only]
-├── appointments/    # Types, availability, book/reschedule/cancel          [planned]
+├── appointments/    # Types, availability, book/reschedule/cancel          [implemented]
 ├── family/          # Family members, consecutive slots, group booking     [planned]
 ├── emergency/       # Clinic-approved emergency guidance, staff handoff    [planned]
 ├── clinic/          # Clinic info and approved knowledge                   [planned]
@@ -42,6 +42,7 @@ docker compose up -d db           # first start runs db/init/*.sql: tables + den
 # (an existing volume skips db/init; reset with: docker compose down -v)
 
 alembic upgrade head              # no-op on a fresh DB (already stamped); applies later migrations
+python -m src.appointments.seed   # OPTIONAL: SAMPLE appointment types/providers/hours for development
 uvicorn src.main:app --reload     # http://localhost:8000/docs
 ```
 

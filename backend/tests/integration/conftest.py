@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -11,7 +12,9 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from src.appointments import models as _appointments_models  # noqa: F401  (registers tables)
 from src.database import get_db_session
+from src.family import models as _family_models  # noqa: F401  (registers tables)
 from src.main import app
 from src.models import Base
 
@@ -26,6 +29,8 @@ async def db_engine() -> AsyncIterator[AsyncEngine]:
     engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        # Needed by the appointment overlap exclusion constraint (uuid in a gist index).
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
         await conn.run_sync(Base.metadata.create_all)
     yield engine
     await engine.dispose()

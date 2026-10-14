@@ -1,6 +1,6 @@
 import json
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -8,8 +8,12 @@ from src.tools.base import ToolContext
 from src.tools.registry import ToolRegistry, tool_registry
 
 EXPECTED_TOOLS = {
+    "get_appointment_types",
+    "get_patient_appointments",
+    "get_appointment_details",
+    "get_booking_status",
     "get_available_slots",
-    "book_appointment",
+    "propose_booking",
     "reschedule_appointment",
     "cancel_appointment",
 }
@@ -66,7 +70,20 @@ async def test_date_range_is_bounded(ctx: ToolContext) -> None:
     assert out["error"] == "invalid_arguments"
 
 
-async def test_stub_returns_not_implemented(ctx: ToolContext) -> None:
+async def test_service_outcome_is_mapped_and_session_rolled_back(ctx: ToolContext, monkeypatch) -> None:
+    from src.appointments import service
+    from src.appointments.exceptions import UnknownAppointmentType
+
+    async def boom(*args, **kwargs):
+        raise UnknownAppointmentType("nope")
+
+    monkeypatch.setattr(service, "get_available_slots", boom)
+    session = AsyncMock()
+    ctx = ToolContext(session, ctx.user_id, ctx.patient_id, ctx.conversation_id, "call_1")
     args = {"appointment_type": "cleaning", "start_date": "2026-11-01", "end_date": "2026-11-07"}
+
     out = json.loads(await tool_registry.dispatch("get_available_slots", json.dumps(args), ctx))
-    assert out["status"] == "not_implemented"
+
+    assert out["status"] == "error"
+    assert out["error"] == "unknown_appointment_type"
+    session.rollback.assert_awaited_once()
