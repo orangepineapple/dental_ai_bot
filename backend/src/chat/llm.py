@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 
 # Some Qwen/Ollama builds leave reasoning inline in content as <think>...</think>.
 _THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
+# Qwen3's template injects the opening <think> into the prompt, so the output can hold
+# only the reasoning followed by a bare </think> and then the real answer.
+_THINK_CLOSE = re.compile(r"</think>", re.IGNORECASE)
+_NO_THINK_SWITCH = "/no_think"
+
+
+def strip_reasoning(text: str) -> str:
+    text = _THINK_BLOCK.sub("", text)
+    parts = _THINK_CLOSE.split(text)
+    return parts[-1].strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +72,10 @@ class OpenAICompatibleClient:
                 print("[LLM DEBUG] client not created: LLM_API_KEY is not set (even Ollama needs a dummy value)")
             raise LLMUnavailable("LLM_API_KEY is not configured")
 
+        if self._config.SOFT_NO_THINK and messages and messages[0].get("role") == "system":
+            # Qwen3 soft switch; works even when the endpoint ignores `think`/`reasoning_effort`.
+            messages = [{**messages[0], "content": f"{messages[0]['content']}\n{_NO_THINK_SWITCH}"}, *messages[1:]]
+
         kwargs: dict[str, Any] = {
             "model": self._config.MODEL,
             "messages": messages,
@@ -74,7 +88,8 @@ class OpenAICompatibleClient:
             kwargs["reasoning_effort"] = self._config.REASONING_EFFORT
 
         # Turn of think because the model is thinking to long
-        kwargs["extra_body"] = {"think": False}
+        # TODO check if the mode just move thinking to content if I set thinking to none - i feel like it does this
+        # kwargs["extra_body"] = {"think": False}
 
         if debug:
             sent_chars = sum(len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or "")) for m in messages)
@@ -113,5 +128,5 @@ class OpenAICompatibleClient:
             for tc in (message.tool_calls or [])
             if getattr(tc, "function", None) is not None
         ]
-        content = _THINK_BLOCK.sub("", message.content).strip() if message.content else message.content
+        content = strip_reasoning(message.content) if message.content else message.content
         return LLMResponse(content=content, tool_calls=tool_calls, finish_reason=completion.choices[0].finish_reason)

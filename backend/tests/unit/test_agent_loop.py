@@ -92,6 +92,18 @@ async def test_tool_round_trip() -> None:
     assert llm.calls[1]["messages"][-1]["role"] == "tool"
 
 
+async def test_text_beside_tool_calls_is_not_persisted_or_replayed() -> None:
+    leaked = LLMResponse(content="Okay, let me figure out...", tool_calls=[_slots_call()])
+    llm = FakeLLM([leaked, LLMResponse(content="Here you go.")])
+
+    result = await _run(llm)
+
+    assert result.new_messages[0]["content"] is None
+    assert result.new_messages[0]["tool_calls"][0]["id"] == "c1"
+    replayed = llm.calls[1]["messages"]
+    assert all("let me figure out" not in str(m.get("content")) for m in replayed)
+
+
 async def test_unknown_tool_does_not_crash_loop() -> None:
     bad = LLMToolCall(id="c1", name="rm_rf", arguments="{}")
     llm = FakeLLM([LLMResponse(content=None, tool_calls=[bad]), LLMResponse(content="ok")])

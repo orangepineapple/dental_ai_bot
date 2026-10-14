@@ -87,6 +87,12 @@ async def build_patient_context(session: AsyncSession, patient_id: uuid.UUID, co
     if names:
         lines.append(f"Family members this patient can manage: {', '.join(names)}")
 
+    if config.DEBUG_PRINT:
+        print("User context")
+        print(       "Patient context (from clinic records, for light personalization only: greet by first "
+                "name, but do not assume why they are here and always use tools for current "
+                "availability and appointment details):\n" + "\n".join(f"- {line}" for line in lines))
+
     return (
         "Patient context (from clinic records, for light personalization only: greet by first "
         "name, but do not assume why they are here and always use tools for current "

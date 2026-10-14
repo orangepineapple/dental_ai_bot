@@ -84,7 +84,8 @@ async def run_agent_loop(*, llm: LLMClient, registry: ToolRegistry, history: lis
 
         assistant_msg: Message = {
             "role": "assistant",
-            "content": response.content,
+            # Text beside tool calls is narration/leaked reasoning; never persist or replay it.
+            "content": None,
             "tool_calls": [
                 {
                     "id": tc.id,

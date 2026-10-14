@@ -270,8 +270,7 @@ class GetPatientAppointmentsArgs(ToolArgs):
     patient_id: uuid.UUID | None = Field(
         default=None,
         description=(
-            "Only for a family member: an id from get_authorized_family_members. "
-            "Omit for the logged-in patient."
+            "Provide the currently booked appointments and possibly past appointments for a patient"
         ),
     )
     include_past: bool = Field(default=False, description="Also include past and cancelled ones.")
