@@ -16,6 +16,8 @@ EXPECTED_TOOLS = {
     "propose_booking",
     "reschedule_appointment",
     "cancel_appointment",
+    "get_emergency_instructions",
+    "notify_staff_of_emergency",
 }
 
 
@@ -30,7 +32,7 @@ def ctx() -> ToolContext:
     )
 
 
-def test_default_registry_contains_appointment_tools() -> None:
+def test_default_registry_contains_expected_tools() -> None:
     assert set(tool_registry.names) == EXPECTED_TOOLS
 
 

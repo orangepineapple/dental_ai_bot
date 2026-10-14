@@ -14,6 +14,7 @@ from sqlalchemy.pool import NullPool
 
 from src.appointments import models as _appointments_models  # noqa: F401  (registers tables)
 from src.database import get_db_session
+from src.emergency import models as _emergency_models  # noqa: F401  (registers tables)
 from src.family import models as _family_models  # noqa: F401  (registers tables)
 from src.main import app
 from src.models import Base

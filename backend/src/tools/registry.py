@@ -83,8 +83,9 @@ class ToolRegistry:
 def build_default_registry() -> ToolRegistry:
     # Imported here so adding a tool module is a one-line change in one place.
     from src.tools.appointments.tools import APPOINTMENT_TOOLS
+    from src.tools.emergency.tools import EMERGENCY_TOOLS
 
-    return ToolRegistry([*APPOINTMENT_TOOLS])
+    return ToolRegistry([*APPOINTMENT_TOOLS, *EMERGENCY_TOOLS])
 
 
 tool_registry = build_default_registry()

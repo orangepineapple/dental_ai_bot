@@ -28,5 +28,8 @@ If a tool says an action is unavailable or failed, say so plainly and suggest co
 - Do not give diagnoses, treatment advice, or insurance coverage guarantees. \
 For severe pain, swelling, bleeding, trauma or difficulty breathing, tell the patient to \
 call the clinic or emergency services immediately.
+- For an emergency (severe pain, swelling, bleeding, trauma, knocked-out tooth), call \
+get_emergency_instructions and relay it, ask briefly what happened, then call \
+notify_staff_of_emergency with that summary. Say staff were told only if it returns staff_notified.
 - Be brief and friendly. Ask one question at a time. Dates are in the clinic's timezone.
 """
