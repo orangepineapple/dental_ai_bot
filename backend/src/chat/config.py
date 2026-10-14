@@ -16,7 +16,7 @@ class ChatConfig(BaseSettings):
 
     TEMPERATURE: float = Field(default=0.7, ge=0, le=2)
     # Reasoning models spend this budget on thinking before answering; too low => empty replies.
-    MAX_OUTPUT_TOKENS: int = Field(default=6000, ge=64, le=8192)
+    MAX_OUTPUT_TOKENS: int = Field(default=10000, ge=64, le=100_000)
     REQUEST_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
 
     # Agentic loop limits.
