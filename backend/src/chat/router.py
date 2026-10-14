@@ -13,8 +13,8 @@ from src.chat.schemas import (
     ChatRequest,
     ChatResponse,
     ConversationSummary,
+    PendingProposalResponse,
     ProposalResolution,
-    ProposalResponse,
 )
 from src.database import DbSession
 from src.exceptions import ErrorResponse, NotFound
@@ -88,11 +88,11 @@ async def list_conversations(user: CurrentUser, session: DbSession) -> list[Conv
 
 
 @router.get("/conversations/{conversation_id}/proposal",
-    summary="Pending booking confirmation",
-    description="The booking card still waiting for the patient, or null.",
+    summary="Pending confirmation card",
+    description="The booking or cancellation card still waiting for the patient, or null.",
     responses=_ERRORS,
 )
-async def get_pending_proposal(conversation_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResponse | None:
+async def get_pending_proposal(conversation_id: uuid.UUID, user: CurrentUser, session: DbSession) -> PendingProposalResponse | None:
     conversation = await service.get_or_create_conversation(session, user, conversation_id)
     if conversation is None:
         raise NotFound()
@@ -121,5 +121,31 @@ async def confirm_proposal(proposal_id: uuid.UUID, user: CurrentUser, session: D
 async def decline_proposal(proposal_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResolution:
     try:
         return await service.resolve_proposal(session, user, proposal_id, "decline")
+    except ProposalNotFound:
+        raise NotFound() from None
+
+
+@router.post("/cancellations/{proposal_id}/confirm",
+    summary="Confirm a proposed cancellation",
+    description=(
+        "The patient's explicit approval. This is the only way a chat cancellation is "
+        "performed; it is idempotent, so a repeated click returns the first result."
+    ),
+    responses=_ERRORS,
+)
+async def confirm_cancellation(proposal_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResolution:
+    try:
+        return await service.resolve_cancellation(session, user, proposal_id, "confirm")
+    except ProposalNotFound:
+        raise NotFound() from None
+
+
+@router.post("/cancellations/{proposal_id}/decline",
+    summary="Keep the appointment (decline a proposed cancellation)",
+    responses=_ERRORS,
+)
+async def decline_cancellation(proposal_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ProposalResolution:
+    try:
+        return await service.resolve_cancellation(session, user, proposal_id, "decline")
     except ProposalNotFound:
         raise NotFound() from None

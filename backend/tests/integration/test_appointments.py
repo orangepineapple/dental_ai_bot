@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.appointments import proposals, service
+from src.appointments import cancel_proposals, proposals, service
 from src.appointments.config import appointment_settings
 from src.appointments.exceptions import (
     NeedsConfirmation,
@@ -543,10 +543,20 @@ async def test_tool_flow_search_propose_confirm_list_cancel(session: AsyncSessio
     status = await _call(session, jane, "get_booking_status", {"slot_id": slot_id})
     assert status["status"] == "booked"
 
-    cancelled = await _call(
-        session, jane, "cancel_appointment", {"appointment_id": appointment_id, "confirmed": True}
+    proposed_cancel = await _call(session, jane, "propose_cancellation", {"appointment_id": appointment_id})
+    assert proposed_cancel["status"] == "awaiting_patient_confirmation"
+    pending_cancel = await cancel_proposals.get_pending_cancellation(
+        session, user_id=jane.user_id, conversation_id=jane.conversation_id
     )
-    assert cancelled["status"] == "cancelled"
+    assert pending_cancel is not None
+    cancelled = await cancel_proposals.resolve_cancellation(
+        session,
+        user_id=jane.user_id,
+        actor_patient_id=jane.patient_id,
+        proposal_id=pending_cancel.id,
+        action="confirm",
+    )
+    assert cancelled.status == "confirmed"
 
 
 async def test_tool_hides_other_patients_appointments(session: AsyncSession, jane: Person, bob: Person) -> None:
@@ -555,9 +565,7 @@ async def test_tool_hides_other_patients_appointments(session: AsyncSession, jan
     out = await _call(session, bob, "get_appointment_details", {"appointment_id": str(view.id)})
     assert out["status"] == "not_found"
 
-    out = await _call(
-        session, bob, "cancel_appointment", {"appointment_id": str(view.id), "confirmed": True}
-    )
+    out = await _call(session, bob, "propose_cancellation", {"appointment_id": str(view.id)})
     assert out["status"] == "not_found"
 
     out = await _call(session, bob, "get_patient_appointments", {"patient_id": str(jane.patient_id)})

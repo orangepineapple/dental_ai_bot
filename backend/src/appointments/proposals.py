@@ -20,6 +20,7 @@ from src.appointments.models import (
     PROPOSAL_PENDING,
     AppointmentType,
     BookingProposal,
+    CancellationProposal,
     Provider,
 )
 from src.appointments.slot_token import verify_slot_token
@@ -102,11 +103,12 @@ async def create_booking_proposal(session: AsyncSession, *, actor_user_id: uuid.
     )
 
     # A newer suggestion replaces the older one; the partial unique index enforces one.
-    await session.execute(
-        update(BookingProposal)
-        .where(BookingProposal.conversation_id == conversation_id, BookingProposal.status == PROPOSAL_PENDING)
-        .values(status="superseded", resolved_at=now)
-    )
+    for model in (BookingProposal, CancellationProposal):
+        await session.execute(
+            update(model)
+            .where(model.conversation_id == conversation_id, model.status == PROPOSAL_PENDING)
+            .values(status="superseded", resolved_at=now)
+        )
     proposal_id = uuid.uuid4()
     session.add(
         BookingProposal(

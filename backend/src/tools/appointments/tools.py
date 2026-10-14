@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
 
-from src.appointments import proposals, service
+from src.appointments import cancel_proposals, proposals, service
 from src.appointments.config import appointment_settings
 from src.appointments.exceptions import AppointmentError
 from src.tools.base import ToolArgs, ToolContext, ToolDefinition
@@ -199,38 +199,46 @@ async def reschedule_appointment(args: RescheduleAppointmentArgs, ctx: ToolConte
 
 
 # --------------------------------------------------------------------------- #
-# cancel_appointment
+# propose_cancellation
 # --------------------------------------------------------------------------- #
-class CancelAppointmentArgs(ToolArgs):
-    appointment_id: uuid.UUID = Field(description="Appointment to cancel.")
-    confirmed: bool = Field(
-        description=(
-            "True ONLY after the patient explicitly confirmed cancelling this appointment "
-            "in their latest message."
-        )
+class ProposeCancellationArgs(ToolArgs):
+    appointment_id: uuid.UUID = Field(
+        description="Appointment to cancel, from get_patient_appointments."
     )
     reason: str | None = Field(default=None, max_length=300, description="Optional reason.")
 
 
-async def cancel_appointment(args: CancelAppointmentArgs, ctx: ToolContext) -> dict[str, Any]:
-    """Cancel an appointment, applying the clinic's cancellation policy."""
+async def propose_cancellation(args: ProposeCancellationArgs, ctx: ToolContext) -> dict[str, Any]:
+    """Show the patient a cancellation card. This does NOT cancel anything.
+
+    The appointment is only cancelled when the patient presses Confirm on the card, via an
+    authenticated endpoint the model cannot call.
+    """
 
     async def call() -> dict[str, Any]:
-        outcome = await service.cancel_appointment(
+        view = await cancel_proposals.create_cancellation_proposal(
             ctx.session,
             actor_user_id=ctx.user_id,
             actor_patient_id=ctx.patient_id,
+            conversation_id=ctx.conversation_id,
             appointment_id=args.appointment_id,
-            confirmed=args.confirmed,
             reason=args.reason,
         )
-        result = {
-            **_appointment_dict(outcome.appointment),
-            "status": "cancelled",
-            "late_cancellation": outcome.late_cancellation,
+        result: dict[str, Any] = {
+            "status": "awaiting_patient_confirmation",
+            "appointment_type": view.appointment_type_name,
+            "starts_at": _local_iso(view.starts_at),
+            "provider_name": view.provider_name,
+            "patient_first_name": view.patient_first_name,
+            "late_cancellation": view.late_cancellation,
+            "message": (
+                "A confirmation card with Confirm and Keep buttons is now shown to the "
+                "patient. Nothing is cancelled yet. Do not say it is cancelled; briefly ask "
+                "the patient to review and confirm the card."
+            ),
         }
-        if outcome.policy_note:
-            result["policy_note"] = outcome.policy_note
+        if view.policy_note:
+            result["policy_note"] = view.policy_note
         return result
 
     return await _guarded(ctx, call)
@@ -400,11 +408,12 @@ APPOINTMENT_TOOLS: list[ToolDefinition] = [
         handler=reschedule_appointment,
     ),
     ToolDefinition(
-        name="cancel_appointment",
+        name="propose_cancellation",
         description=(
-            "Cancel an existing appointment. Only call after the patient explicitly confirmed."
+            "When the patient wants to cancel an appointment, show them a confirmation card "
+            "for it. This does not cancel: the patient confirms with a button."
         ),
-        args_model=CancelAppointmentArgs,
-        handler=cancel_appointment,
+        args_model=ProposeCancellationArgs,
+        handler=propose_cancellation,
     ),
 ]

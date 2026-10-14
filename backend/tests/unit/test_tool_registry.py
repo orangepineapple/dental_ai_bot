@@ -15,7 +15,7 @@ EXPECTED_TOOLS = {
     "get_available_slots",
     "propose_booking",
     "reschedule_appointment",
-    "cancel_appointment",
+    "propose_cancellation",
     "get_emergency_instructions",
     "notify_staff_of_emergency",
 }
@@ -56,8 +56,8 @@ async def test_unknown_tool_is_refused(ctx: ToolContext) -> None:
 
 
 async def test_extra_argument_is_rejected(ctx: ToolContext) -> None:
-    args = {"appointment_id": str(uuid.uuid4()), "confirmed": True, "patient_id": "x"}
-    out = json.loads(await tool_registry.dispatch("cancel_appointment", json.dumps(args), ctx))
+    args = {"appointment_id": str(uuid.uuid4()), "patient_id": "x"}
+    out = json.loads(await tool_registry.dispatch("propose_cancellation", json.dumps(args), ctx))
     assert out["error"] == "invalid_arguments"
 
 

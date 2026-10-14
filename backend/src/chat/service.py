@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.appointments import proposals
+from src.appointments import cancel_proposals, proposals
 from src.appointments.config import appointment_settings
 from src.auth.models import AuthUser
 from src.chat.agent import AgentResult, Message, run_agent_loop
@@ -14,7 +14,13 @@ from src.chat.constants import FALLBACK_REPLY, TRUNCATED_REPLY
 from src.chat.llm import LLMClient
 from src.chat.models import ChatConversation, ChatMessage
 from src.chat.patient_context import build_patient_context
-from src.chat.schemas import ConversationSummary, ProposalResolution, ProposalResponse
+from src.chat.schemas import (
+    CancellationProposalResponse,
+    ConversationSummary,
+    PendingProposalResponse,
+    ProposalResolution,
+    ProposalResponse,
+)
 from src.tools.base import ToolContext
 from src.tools.registry import ToolRegistry
 
@@ -220,11 +226,44 @@ def proposal_response(view: proposals.ProposalView) -> ProposalResponse:
     )
 
 
-async def get_pending_proposal(session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID) -> ProposalResponse | None:
+def cancellation_response(view: cancel_proposals.CancellationView) -> CancellationProposalResponse:
+    tz = ZoneInfo(appointment_settings.CLINIC_TIMEZONE)
+    return CancellationProposalResponse(
+        id=view.id,
+        appointment_type=view.appointment_type_name,
+        patient_first_name=view.patient_first_name,
+        provider_name=view.provider_name,
+        starts_at=view.starts_at.astimezone(tz).isoformat(),
+        display_time=proposals.format_local(view.starts_at),
+        expires_at=view.expires_at,
+        reason=view.reason,
+        late_cancellation=view.late_cancellation,
+        policy_note=view.policy_note,
+    )
+
+
+async def get_pending_proposal(session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID) -> PendingProposalResponse | None:
+    """The one live card for this conversation (a new proposal supersedes any other)."""
     view = await proposals.get_pending_proposal(
         session, user_id=user_id, conversation_id=conversation_id
     )
-    return proposal_response(view) if view else None
+    if view:
+        return proposal_response(view)
+    cancellation = await cancel_proposals.get_pending_cancellation(
+        session, user_id=user_id, conversation_id=conversation_id
+    )
+    return cancellation_response(cancellation) if cancellation else None
+
+
+async def _record_resolution(session: AsyncSession, conversation_id: uuid.UUID, message: str) -> None:
+    # The server's own words are the official record; the model never narrates the outcome.
+    _persist(session, conversation_id, [{"role": "assistant", "content": message}])
+    await session.execute(
+        update(ChatConversation)
+        .where(ChatConversation.id == conversation_id)
+        .values(updated_at=func.now())
+    )
+    await session.commit()
 
 
 async def resolve_proposal(session: AsyncSession, user: AuthUser, proposal_id: uuid.UUID, action: proposals.Action) -> ProposalResolution:
@@ -238,15 +277,24 @@ async def resolve_proposal(session: AsyncSession, user: AuthUser, proposal_id: u
         action=action,
     )
     if outcome.changed:
-        # The server's own words are the official record; the model never narrates a booking.
-        conversation_id = outcome.proposal.conversation_id
-        _persist(session, conversation_id, [{"role": "assistant", "content": outcome.message}])
-        await session.execute(
-            update(ChatConversation)
-            .where(ChatConversation.id == conversation_id)
-            .values(updated_at=func.now())
-        )
-        await session.commit()
+        await _record_resolution(session, outcome.proposal.conversation_id, outcome.message)
     return ProposalResolution(
         status=outcome.status, message=outcome.message, proposal=proposal_response(outcome.proposal)
+    )
+
+
+async def resolve_cancellation(session: AsyncSession, user: AuthUser, proposal_id: uuid.UUID, action: proposals.Action) -> ProposalResolution:
+    """Apply the patient's Confirm/Keep click on a cancellation card and record the outcome."""
+    user_id, patient_id = user.id, user.patient_id
+    outcome = await cancel_proposals.resolve_cancellation(
+        session,
+        user_id=user_id,
+        actor_patient_id=patient_id,
+        proposal_id=proposal_id,
+        action=action,
+    )
+    if outcome.changed:
+        await _record_resolution(session, outcome.proposal.conversation_id, outcome.message)
+    return ProposalResolution(
+        status=outcome.status, message=outcome.message, proposal=cancellation_response(outcome.proposal)
     )

@@ -212,3 +212,44 @@ class BookingProposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CancellationProposal(Base):
+    """A cancellation the model suggested, awaiting the patient's click on the card.
+
+    Mirrors BookingProposal: only an authenticated HTTP request from the patient can
+    cancel the appointment; the model has no tool that cancels.
+    """
+
+    __tablename__ = "cancellation_proposal"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'declined', 'expired', 'failed', 'superseded')",
+            name="status_valid",
+        ),
+        # At most one live cancellation proposal per conversation.
+        Index(
+            "cancellation_proposal_conversation_pending_key",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_conversation.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("auth_user.id", ondelete="CASCADE"))
+    appointment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("appointment.id", ondelete="CASCADE")
+    )
+    reason: Mapped[str | None] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(
+        String(16), default=PROPOSAL_PENDING, server_default=PROPOSAL_PENDING
+    )
+    result_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -32,11 +32,30 @@ class ProposalResponse(CustomModel):
     reason: str | None = None
 
 
+class CancellationProposalResponse(CustomModel):
+    """A cancellation awaiting the patient's Confirm / Keep click (rendered as a card)."""
+
+    id: uuid.UUID
+    kind: Literal["cancellation"] = "cancellation"
+    appointment_type: str
+    patient_first_name: str
+    provider_name: str
+    starts_at: str
+    display_time: str
+    expires_at: datetime
+    reason: str | None = None
+    late_cancellation: bool = False
+    policy_note: str | None = None
+
+
+PendingProposalResponse = ProposalResponse | CancellationProposalResponse
+
+
 class ProposalResolution(CustomModel):
     status: Literal["confirmed", "declined", "failed", "expired", "superseded"]
     # Server-written text. This is also stored in the conversation as the assistant's reply.
     message: str
-    proposal: ProposalResponse
+    proposal: PendingProposalResponse
 
 
 class ChatResponse(CustomModel):
@@ -44,8 +63,8 @@ class ChatResponse(CustomModel):
     reply: str
     # True when the model provider failed and the canned fallback was returned.
     degraded: bool = False
-    # Present while a booking confirmation card is waiting for the patient.
-    proposal: ProposalResponse | None = None
+    # Present while a booking or cancellation card is waiting for the patient.
+    proposal: PendingProposalResponse | None = None
 
 
 class ChatMessageResponse(CustomModel):
