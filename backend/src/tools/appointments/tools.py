@@ -1,39 +1,62 @@
 """Model-facing scheduling tools.
 
-STATUS: schemas and registration are final; the handlers are placeholders that
-return `not_implemented`. Each handler's docstring is the implementation spec.
-Fill them in AFTER the supporting service/DB layer exists in `src/appointments`,
-and keep the handlers thin: authorize -> call service -> map to a minimal dict.
+Handlers are thin: map validated args + server-side identity to a service call, then
+map the outcome to a minimal dict. All rules live in src/appointments/service.py.
 
 Rules that apply to every tool in this file (from CLAUDE.md):
 - Identity comes from `ctx` (set by the server from the JWT), never from `args`.
-- Re-validate in service code; the Pydantic model here is only the first gate.
-- Return only fields the model needs to talk to the patient. No internal ids that
-  are not required for a follow-up call, no PHI beyond the appointment itself.
-- Never claim success unless the DB transaction committed.
+- Return only fields the model needs to talk to the patient.
+- Never claim success unless the DB transaction committed (the service guarantees it).
 """
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
 
+from src.appointments import proposals, service
+from src.appointments.config import appointment_settings
+from src.appointments.exceptions import AppointmentError
 from src.tools.base import ToolArgs, ToolContext, ToolDefinition
 
 MAX_SLOT_SEARCH_DAYS = 31
+MAX_LISTED_APPOINTMENTS = 20
+
+def _local_iso(value: datetime) -> str:
+    return value.astimezone(ZoneInfo(appointment_settings.CLINIC_TIMEZONE)).isoformat()
 
 
-def _not_implemented(tool_name: str) -> dict[str, Any]:
-    # Worded so the model tells the patient the truth and offers a human instead.
+def _appointment_dict(view: service.AppointmentView) -> dict[str, Any]:
     return {
-        "status": "not_implemented",
-        "tool": tool_name,
-        "message": (
-            "This action is not available yet and nothing was changed. Tell the patient "
-            "you cannot do this right now and that the clinic staff can help."
-        ),
+        "appointment_id": str(view.id),
+        "status": view.status,
+        "appointment_type": view.appointment_type_name,
+        "starts_at": _local_iso(view.starts_at),
+        "provider_name": view.provider_name,
+        "patient_first_name": view.patient_first_name,
     }
+
+
+def _error_dict(exc: AppointmentError) -> dict[str, Any]:
+    out: dict[str, Any] = {"status": exc.status, "message": str(exc)}
+    if exc.code:
+        out["error"] = exc.code
+    return out
+
+
+async def _guarded(ctx: ToolContext, call) -> dict[str, Any]:
+    """Run a service call; turn business outcomes into tool results and release any locks."""
+    try:
+        return await call()
+    except AppointmentError as exc:
+        await ctx.session.rollback()
+        return _error_dict(exc)
+    except Exception:
+        # Leave the session usable for the next tool call; the registry reports the failure.
+        await ctx.session.rollback()
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -61,67 +84,39 @@ class GetAvailableSlotsArgs(ToolArgs):
 
 
 async def get_available_slots(args: GetAvailableSlotsArgs, ctx: ToolContext) -> dict[str, Any]:
-    """Return open appointment slots. READ-ONLY: must never reserve or hold a slot.
+    """Return open slots. READ-ONLY: never reserves or holds a slot."""
 
-    Implementation spec
-    -------------------
-    Tables needed (none exist yet; create via Alembic):
-      - appointment_type(code PK, name, duration_minutes, is_active,
-            requires_provider_role, ...)           # also used by get_appointment_types
-      - provider(id, name, role, is_active)
-      - provider_working_hours(provider_id, weekday, start_time, end_time)
-      - clinic_hours / clinic_closure(date, reason)   # holidays, closures
-      - appointment(id, patient_id, provider_id, appointment_type_code, starts_at,
-            ends_at, status['booked'|'cancelled'|'completed'|'no_show'],
-            idempotency_key UNIQUE, created_at, updated_at)
+    async def call() -> dict[str, Any]:
+        result = await service.get_available_slots(
+            ctx.session,
+            appointment_type_code=args.appointment_type,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            provider_id=args.provider_id,
+        )
+        return {
+            "status": "ok",
+            "appointment_type": result.appointment_type.code,
+            "duration_minutes": result.appointment_type.duration_minutes,
+            "slots": [
+                {
+                    "slot_id": slot.token,
+                    "starts_at": _local_iso(slot.starts_at),
+                    "provider_name": slot.provider_name,
+                }
+                for slot in result.slots
+            ],
+        }
 
-    Steps:
-      1. Look up `args.appointment_type`; unknown/inactive -> return
-         {"status": "error", "error": "unknown_appointment_type"}. Take the
-         duration and any eligibility/escalation rule from the type row (do NOT
-         let the model pass a duration). If the type requires escalation
-         (e.g. emergency/pain), return {"status": "requires_staff"} instead.
-      2. Clamp the range to [today(clinic tz), +MAX_SLOT_SEARCH_DAYS]; never
-         return slots in the past or inside the minimum-notice window.
-      3. For each eligible provider (filtered by `args.provider_id` if given),
-         generate candidate slots from working hours minus clinic closures minus
-         existing non-cancelled `appointment` rows (overlap check on
-         [starts_at, ends_at)). Convert to clinic timezone for display.
-      4. Return at most ~20 slots, earliest first.
-
-    Return shape:
-      {
-        "status": "ok",
-        "appointment_type": "cleaning",
-        "duration_minutes": 60,
-        "slots": [
-          {"slot_id": "<opaque id encoding provider+start, see below>",
-           "starts_at": "2026-11-02T09:00:00-05:00",
-           "provider_name": "Dr. Lee"}
-        ]
-      }
-      or {"status": "ok", "slots": []} when nothing is free (model should offer
-      a wider range or staff handoff).
-
-    `slot_id` should be an opaque, server-signed token (provider_id + starts_at +
-    appointment_type [+ expiry]) so book_appointment can verify it was issued by
-    the server rather than invented by the model. It is NOT a reservation.
-    """
-    return _not_implemented("get_available_slots")
+    return await _guarded(ctx, call)
 
 
 # --------------------------------------------------------------------------- #
-# book_appointment
+# propose_booking
 # --------------------------------------------------------------------------- #
-class BookAppointmentArgs(ToolArgs):
+class ProposeBookingArgs(ToolArgs):
     slot_id: str = Field(
         min_length=1, max_length=512, description="slot_id returned by get_available_slots."
-    )
-    confirmed: bool = Field(
-        description=(
-            "True ONLY after the patient explicitly said yes to this exact date, time and "
-            "appointment type in their latest message."
-        )
     )
     patient_id: uuid.UUID | None = Field(
         default=None,
@@ -133,45 +128,37 @@ class BookAppointmentArgs(ToolArgs):
     reason: str | None = Field(default=None, max_length=300, description="Optional visit reason.")
 
 
-async def book_appointment(args: BookAppointmentArgs, ctx: ToolContext) -> dict[str, Any]:
-    """Book one appointment for the logged-in patient (or an authorized dependent).
+async def propose_booking(args: ProposeBookingArgs, ctx: ToolContext) -> dict[str, Any]:
+    """Show the patient a confirmation card. This does NOT book anything.
 
-    Implementation spec
-    -------------------
-    Tables: appointment, appointment_type, provider (see get_available_slots),
-    plus the family/guardian link table for dependents:
-      - patient_guardian(guardian_patient_id, dependent_patient_id, can_book BOOL)
-
-    Steps (all inside ONE DB transaction on `ctx.session`):
-      1. If `args.confirmed` is not True -> {"status": "needs_confirmation"}; no
-         writes. (Stronger option: have get_available_slots/a "propose" step
-         persist a pending confirmation row and require its token here, so a
-         model cannot self-assert `confirmed`.)
-      2. Target patient = `args.patient_id` or `ctx.patient_id`. If it is not
-         `ctx.patient_id`, require a patient_guardian row with can_book = true;
-         otherwise return {"status": "error", "error": "not_authorized"}.
-      3. Verify and decode `slot_id` (signature, expiry, appointment type).
-      4. Idempotency key = sha256(f"{ctx.conversation_id}:{target}:{slot_id}").
-         If an appointment with that key exists, return it as success (retry safe).
-         Back this with a UNIQUE constraint, not just a SELECT.
-      5. Re-check availability under lock: SELECT ... FOR UPDATE on the provider's
-         overlapping appointments (or an exclusion constraint on
-         (provider_id, tstzrange(starts_at, ends_at)) WHERE status = 'booked').
-         If taken -> {"status": "slot_unavailable"}; model should re-run
-         get_available_slots.
-      6. Enforce policy: no double-booking the same patient at the same time,
-         min notice, max future horizon, active-appointment limits.
-      7. INSERT appointment (status 'booked'), commit.
-
-    Return shape:
-      {"status": "booked", "appointment_id": "<uuid>", "appointment_type": "cleaning",
-       "starts_at": "<iso8601 clinic tz>", "provider_name": "Dr. Lee",
-       "patient_first_name": "..."}   # first name only, to confirm who it is for
-      Other statuses: needs_confirmation | slot_unavailable | not_authorized |
-      policy_violation (with a short patient-safe "reason").
-    Never return "booked" unless the commit succeeded.
+    The appointment is only created when the patient presses Confirm on the card, via an
+    authenticated endpoint the model cannot call.
     """
-    return _not_implemented("book_appointment")
+
+    async def call() -> dict[str, Any]:
+        view = await proposals.create_booking_proposal(
+            ctx.session,
+            actor_user_id=ctx.user_id,
+            actor_patient_id=ctx.patient_id,
+            target_patient_id=args.patient_id or ctx.patient_id,
+            conversation_id=ctx.conversation_id,
+            slot_token=args.slot_id,
+            reason=args.reason,
+        )
+        return {
+            "status": "awaiting_patient_confirmation",
+            "appointment_type": view.appointment_type_name,
+            "starts_at": _local_iso(view.starts_at),
+            "provider_name": view.provider_name,
+            "patient_first_name": view.patient_first_name,
+            "message": (
+                "A confirmation card with Confirm and Decline buttons is now shown to the "
+                "patient. Nothing is booked yet. Do not say it is booked; briefly ask the "
+                "patient to review and confirm the card."
+            ),
+        }
+
+    return await _guarded(ctx, call)
 
 
 # --------------------------------------------------------------------------- #
@@ -190,42 +177,25 @@ class RescheduleAppointmentArgs(ToolArgs):
     )
 
 
-async def reschedule_appointment(
-    args: RescheduleAppointmentArgs, ctx: ToolContext
-) -> dict[str, Any]:
-    """Move an existing appointment to a new slot atomically.
+async def reschedule_appointment(args: RescheduleAppointmentArgs, ctx: ToolContext) -> dict[str, Any]:
+    """Move an existing appointment to a new slot atomically."""
 
-    Implementation spec
-    -------------------
-    Tables: appointment, appointment_type, provider, patient_guardian,
-    clinic_policy (or config) for the reschedule window.
+    async def call() -> dict[str, Any]:
+        outcome = await service.reschedule_appointment(
+            ctx.session,
+            actor_user_id=ctx.user_id,
+            actor_patient_id=ctx.patient_id,
+            appointment_id=args.appointment_id,
+            new_slot_token=args.new_slot_id,
+            confirmed=args.confirmed,
+        )
+        return {
+            **_appointment_dict(outcome.appointment),
+            "status": "rescheduled",
+            "old_starts_at": _local_iso(outcome.old_starts_at),
+        }
 
-    Steps (one transaction):
-      1. `confirmed` must be True, else {"status": "needs_confirmation"}.
-      2. Load the appointment FOR UPDATE. Authorize: its patient_id is
-         `ctx.patient_id` or a dependent with patient_guardian.can_book. A missing
-         row and an unauthorized row must produce the SAME response
-         ({"status": "not_found"}) so ids cannot be probed.
-      3. Must be status 'booked' and in the future.
-      4. Policy: reject inside the clinic's late-change window (e.g. < 24h)
-         with {"status": "policy_violation", "reason": "..."} and suggest staff.
-         The window is clinic policy: read it from config, do not hard-code it.
-      5. Verify `new_slot_id`; its appointment type/duration must match the
-         existing appointment (or be allowed by the type's rules).
-      6. Re-check the new slot's availability under lock (same method as
-         book_appointment). Do the old-slot release and new-slot claim in this
-         same transaction so the patient is never left with zero or two slots.
-         Simplest: UPDATE the same appointment row's provider_id/starts_at/ends_at
-         and write an appointment_audit row (old and new values).
-      7. Idempotent: if the appointment is already at the target slot, return ok.
-
-    Return shape:
-      {"status": "rescheduled", "appointment_id": "<uuid>",
-       "old_starts_at": "<iso>", "new_starts_at": "<iso>", "provider_name": "..."}
-      Other statuses: needs_confirmation | not_found | slot_unavailable |
-      policy_violation.
-    """
-    return _not_implemented("reschedule_appointment")
+    return await _guarded(ctx, call)
 
 
 # --------------------------------------------------------------------------- #
@@ -243,36 +213,166 @@ class CancelAppointmentArgs(ToolArgs):
 
 
 async def cancel_appointment(args: CancelAppointmentArgs, ctx: ToolContext) -> dict[str, Any]:
-    """Cancel an appointment, applying the clinic's cancellation policy.
+    """Cancel an appointment, applying the clinic's cancellation policy."""
 
-    Implementation spec
-    -------------------
-    Tables: appointment (status, cancelled_at, cancellation_reason), patient_guardian,
-    appointment_audit, clinic_policy/config (cancellation window, fee rules).
+    async def call() -> dict[str, Any]:
+        outcome = await service.cancel_appointment(
+            ctx.session,
+            actor_user_id=ctx.user_id,
+            actor_patient_id=ctx.patient_id,
+            appointment_id=args.appointment_id,
+            confirmed=args.confirmed,
+            reason=args.reason,
+        )
+        result = {
+            **_appointment_dict(outcome.appointment),
+            "status": "cancelled",
+            "late_cancellation": outcome.late_cancellation,
+        }
+        if outcome.policy_note:
+            result["policy_note"] = outcome.policy_note
+        return result
 
-    Steps (one transaction):
-      1. `confirmed` must be True, else {"status": "needs_confirmation"}.
-      2. Load FOR UPDATE and authorize exactly as reschedule_appointment
-         (same "not_found" for missing and unauthorized).
-      3. Already 'cancelled' -> return {"status": "cancelled"} (idempotent).
-         Only 'booked' future appointments can be cancelled.
-      4. Policy: if inside the late-cancellation window, still allow only if clinic
-         policy says so, and include {"late_cancellation": true, "policy_note": "..."}
-         using clinic-provided wording. Do not invent fees; if the policy requires a
-         human decision return {"status": "requires_staff"}.
-      5. UPDATE status = 'cancelled', cancelled_at = now(), cancellation_reason;
-         soft-cancel (never DELETE) so history and audit remain. Commit.
+    return await _guarded(ctx, call)
 
-    Return shape:
-      {"status": "cancelled", "appointment_id": "<uuid>", "starts_at": "<iso>",
-       "late_cancellation": false}
-      Other statuses: needs_confirmation | not_found | policy_violation |
-      requires_staff.
-    """
-    return _not_implemented("cancel_appointment")
+
+# --------------------------------------------------------------------------- #
+# get_appointment_types
+# --------------------------------------------------------------------------- #
+class GetAppointmentTypesArgs(ToolArgs):
+    pass
+
+
+async def get_appointment_types(args: GetAppointmentTypesArgs, ctx: ToolContext) -> dict[str, Any]:
+    """Reference list of services: durations, eligibility and escalation rules."""
+    types = await service.list_appointment_types(ctx.session)
+    return {
+        "status": "ok",
+        "appointment_types": [
+            {
+                "code": t.code,
+                "name": t.name,
+                "description": t.description,
+                "duration_minutes": t.duration_minutes,
+                "minimum_age_years": t.min_age_years,
+                "bookable_by_assistant": not t.requires_staff_booking,
+                "staff_note": t.escalation_note if t.requires_staff_booking else None,
+            }
+            for t in types
+        ],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# get_patient_appointments
+# --------------------------------------------------------------------------- #
+class GetPatientAppointmentsArgs(ToolArgs):
+    patient_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Only for a family member: an id from get_authorized_family_members. "
+            "Omit for the logged-in patient."
+        ),
+    )
+    include_past: bool = Field(default=False, description="Also include past and cancelled ones.")
+
+
+async def get_patient_appointments(args: GetPatientAppointmentsArgs, ctx: ToolContext) -> dict[str, Any]:
+    """List the logged-in patient's (or an authorized dependent's) appointments."""
+
+    async def call() -> dict[str, Any]:
+        views = await service.list_patient_appointments(
+            ctx.session,
+            actor_patient_id=ctx.patient_id,
+            patient_id=args.patient_id,
+            include_past=args.include_past,
+            limit=MAX_LISTED_APPOINTMENTS,
+        )
+        return {"status": "ok", "appointments": [_appointment_dict(v) for v in views]}
+
+    return await _guarded(ctx, call)
+
+
+# --------------------------------------------------------------------------- #
+# get_appointment_details
+# --------------------------------------------------------------------------- #
+class GetAppointmentDetailsArgs(ToolArgs):
+    appointment_id: uuid.UUID = Field(description="Appointment id from get_patient_appointments.")
+
+
+async def get_appointment_details(args: GetAppointmentDetailsArgs, ctx: ToolContext) -> dict[str, Any]:
+    """Details of one appointment, only if the patient may manage it."""
+
+    async def call() -> dict[str, Any]:
+        view = await service.get_appointment_details(
+            ctx.session, actor_patient_id=ctx.patient_id, appointment_id=args.appointment_id
+        )
+        return {**_appointment_dict(view), "ends_at": _local_iso(view.ends_at), "reason": view.reason}
+
+    return await _guarded(ctx, call)
+
+
+# --------------------------------------------------------------------------- #
+# get_booking_status
+# --------------------------------------------------------------------------- #
+class GetBookingStatusArgs(ToolArgs):
+    slot_id: str = Field(
+        min_length=1, max_length=512, description="The slot_id of the booking attempt to check."
+    )
+    patient_id: uuid.UUID | None = Field(
+        default=None, description="Only if the booking was for a family member."
+    )
+
+
+async def get_booking_status(args: GetBookingStatusArgs, ctx: ToolContext) -> dict[str, Any]:
+    """Ground truth after a timeout or error during booking. Never guess; call this."""
+
+    async def call() -> dict[str, Any]:
+        view = await service.get_booking_status(
+            ctx.session,
+            actor_patient_id=ctx.patient_id,
+            target_patient_id=args.patient_id or ctx.patient_id,
+            conversation_id=ctx.conversation_id,
+            slot_token=args.slot_id,
+        )
+        if view is None:
+            return {"status": "not_booked", "message": "No booking exists for that slot."}
+        return {**_appointment_dict(view), "status": "booked"}
+
+    return await _guarded(ctx, call)
 
 
 APPOINTMENT_TOOLS: list[ToolDefinition] = [
+    ToolDefinition(
+        name="get_appointment_types",
+        description=(
+            "List the appointment types the clinic offers with durations, eligibility and "
+            "whether staff must arrange them. Use to find the right type code."
+        ),
+        args_model=GetAppointmentTypesArgs,
+        handler=get_appointment_types,
+    ),
+    ToolDefinition(
+        name="get_patient_appointments",
+        description="List the logged-in patient's upcoming appointments (or a family member's).",
+        args_model=GetPatientAppointmentsArgs,
+        handler=get_patient_appointments,
+    ),
+    ToolDefinition(
+        name="get_appointment_details",
+        description="Get the details of one appointment by id.",
+        args_model=GetAppointmentDetailsArgs,
+        handler=get_appointment_details,
+    ),
+    ToolDefinition(
+        name="get_booking_status",
+        description=(
+            "Check whether a booking attempt actually succeeded. Use after a timeout or "
+            "internal error instead of assuming."
+        ),
+        args_model=GetBookingStatusArgs,
+        handler=get_booking_status,
+    ),
     ToolDefinition(
         name="get_available_slots",
         description=(
@@ -283,13 +383,13 @@ APPOINTMENT_TOOLS: list[ToolDefinition] = [
         handler=get_available_slots,
     ),
     ToolDefinition(
-        name="book_appointment",
+        name="propose_booking",
         description=(
-            "Book an appointment into a slot from get_available_slots. Only call after the "
-            "patient explicitly confirmed the exact date, time and type."
+            "After the patient picks a slot from get_available_slots, show them a confirmation "
+            "card for it. This does not book: the patient confirms with a button."
         ),
-        args_model=BookAppointmentArgs,
-        handler=book_appointment,
+        args_model=ProposeBookingArgs,
+        handler=propose_booking,
     ),
     ToolDefinition(
         name="reschedule_appointment",
