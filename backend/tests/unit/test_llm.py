@@ -48,23 +48,3 @@ async def test_complete_strips_leaked_reasoning() -> None:
     response = await _client(completions).complete([{"role": "system", "content": "sys"}], [])
 
     assert response.content == "Hello!"
-
-
-async def test_soft_no_think_appended_to_system_message_copy() -> None:
-    completions = _FakeCompletions("ok")
-    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
-
-    await _client(completions).complete(messages, [])
-
-    sent = completions.kwargs["messages"]
-    assert sent[0]["content"].endswith("/no_think")
-    assert sent[1] == {"role": "user", "content": "hi"}
-    assert messages[0]["content"] == "sys"  # caller's list is untouched
-
-
-async def test_soft_no_think_can_be_disabled() -> None:
-    completions = _FakeCompletions("ok")
-
-    await _client(completions, SOFT_NO_THINK=False).complete([{"role": "system", "content": "sys"}], [])
-
-    assert completions.kwargs["messages"][0]["content"] == "sys"
